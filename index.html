@@ -6388,5 +6388,99 @@ if (syncIndicator) {
         });
     }
 }
+
+// SOLUCIÓN DEFINITIVA PARA INSTAGRAM EN MÓVILES
+function forceInstagramBrowser(url) {
+    console.log("🚀 Forzando Instagram en navegador (método definitivo)");
+    
+    // Para Android
+    if (/Android/i.test(navigator.userAgent)) {
+        console.log("🤖 Android detectado");
+        
+        // En Android, podemos usar una técnica especial
+        const androidUrl = url.replace('instagram.com', 'instagram.com/?utm_source=web');
+        
+        // Crear un enlace temporal y simular clic
+        const tempLink = document.createElement('a');
+        tempLink.href = androidUrl;
+        tempLink.target = '_blank';
+        tempLink.rel = 'noopener noreferrer';
+        tempLink.style.display = 'none';
+        
+        document.body.appendChild(tempLink);
+        
+        // Intentar múltiples métodos
+        try {
+            tempLink.click();
+            setTimeout(() => {
+                window.open(androidUrl, '_blank', 'noopener,noreferrer');
+            }, 50);
+        } catch (error) {
+            window.location.href = androidUrl;
+        }
+        
+        setTimeout(() => {
+            if (tempLink.parentNode) {
+                document.body.removeChild(tempLink);
+            }
+        }, 1000);
+        
+    } 
+    // Para iOS
+    else if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+        console.log("🍎 iOS detectado");
+        
+        // En iOS, usar un método diferente
+        const iosUrl = url + '?utm_source=safari';
+        
+        // Crear un iframe temporal
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = 'about:blank';
+        document.body.appendChild(iframe);
+        
+        setTimeout(() => {
+            try {
+                iframe.contentWindow.location.href = iosUrl;
+            } catch (e) {
+                console.log("⚠️ Error en iframe, usando window.open");
+                window.open(iosUrl, '_blank');
+            }
+            
+            setTimeout(() => {
+                window.open(iosUrl, '_blank');
+            }, 100);
+            
+            // Limpiar
+            setTimeout(() => {
+                if (iframe.parentNode) {
+                    document.body.removeChild(iframe);
+                }
+            }, 2000);
+        }, 100);
+        
+    } 
+    // Para desktop
+    else {
+        console.log("💻 Desktop detectado");
+        window.open(url, '_blank', 'noopener,noreferrer');
+    }
+}
+
+// Configuración final
+document.addEventListener('DOMContentLoaded', function() {
+    setTimeout(() => {
+        const instagramLinks = document.querySelectorAll('a.instagram');
+        
+        instagramLinks.forEach(link => {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                forceInstagramBrowser(this.href);
+            });
+        });
+        
+        console.log(`✅ ${instagramLinks.length} enlaces de Instagram configurados`);
+    }, 1500);
+});
     </script>
 </html>
