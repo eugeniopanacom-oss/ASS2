@@ -2852,29 +2852,6 @@ function selectTime(timeStr) {
     console.log("⏰ Hora seleccionada:", timeStr);
 }
 
-async function obtenerHorarioFinal(fecha) {
-    const db = firebase.firestore();
-    
-    // 1. Obtener horario PRESTABLECIDO del local
-    const horarioLocal = await db.collection('calendario_usuario')
-        .doc(fecha)
-        .get();
-    
-    // 2. Obtener horario DESEADO por admin (si existe)
-    const horarioAdmin = await db.collection('horarios_agenda')
-        .doc(fecha)
-        .collection('descansos')
-        .get();
-    
-    // 3. Si admin configuró algo para esta fecha, USA ESO
-    if (!horarioAdmin.empty) {
-        return horarioAdmin.docs.map(doc => doc.data());
-    }
-    
-    // 4. Si no, usa el horario PRESTABLECIDO del local
-    return horarioLocal.data()?.horarios || [];
-}
-
 // ========== AGREGAR LIMPIEZA DEL FORMULARIO ==========
 function limpiarFormularioCompleto() {
     console.log("🧹 Limpiando formulario completo");
@@ -4538,28 +4515,24 @@ inicializarCalendarioSimple();
             console.log("📅 Fecha seleccionada:", dateStr);
         
         // ========== CORRECCIÓN DE BUCLES EN FIREBASE LISTENERS ==========
-// FUNCIÓN COMPLETA PARA ACTUALIZAR HORARIOS - VERSIÓN CORREGIDA
+// ========== FUNCIÓN CORREGIDA - USA agenda_horarios PRIMERO ==========
 async function updateAvailableHours() {
     console.log("🔄 ACTUALIZANDO HORARIOS - " + new Date().toLocaleTimeString());
     
     const hoursList = document.getElementById('hoursList');
-    if (!hoursList) {
-        console.error("❌ Elemento hoursList no encontrado");
-        return;
-    }
+    if (!hoursList) return;
     
     if (!window.selectedDate) {
         hoursList.innerHTML = '<p style="color: #aaa; text-align: center; padding: 20px;">Selecciona una fecha en el calendario</p>';
         return;
     }
     
-    // Mostrar indicador de carga
     hoursList.innerHTML = '<div class="loading" style="margin: 20px auto;"></div>';
     
     try {
         console.log('📅 Buscando horarios para:', window.selectedDate);
         
-        // Verificar si la fecha es pasada
+        // --- 1. VERIFICAR FECHA PASADA ---
         const fechaSeleccionada = parseDate(window.selectedDate);
         const hoy = new Date();
         hoy.setHours(0, 0, 0, 0);
@@ -4575,14 +4548,122 @@ async function updateAvailableHours() {
             return;
         }
         
-        // Obtener datos de Firebase o usar demo
-        let horariosOcupados = [];
-        let horariosBloqueados = [];
-        let horariosPersonalizados = null;
+        // --- 2. 🔴🔴🔴 PRIORIDAD 1: CONFIGURACIÓN DE ADMIN (agenda_horarios) 🔴🔴🔴 ---
+        let horaInicio = 9;
+        let horaFin = 19;
+        let descansos = [];
+        let esDiaNoLaboral = false;
+        let configuracionEncontrada = false;
+        let fuenteConfiguracion = "defaults";
         
+        // DÍA DE LA SEMANA (0=Domingo, 1=Lunes...)
+        const diaSemana = fechaSeleccionada.getDay();
+        
+        // 🔴🔴🔴 PRIMERO: Intentar cargar desde agenda_horarios (LO QUE CONFIGURASTE EN ADMIN)
         if (db) {
             try {
-                // Buscar turnos existentes para esta fecha
+                // Buscar en agenda_horarios por fecha
+                const agendaDoc = await db.collection('agenda_horarios')
+                    .doc(window.selectedDate)
+                    .get();
+                
+                if (agendaDoc.exists) {
+                    const agendaConfig = agendaDoc.data();
+                    console.log('🎯 CONFIGURACIÓN ENCONTRADA EN agenda_horarios:', agendaConfig);
+                    
+                    fuenteConfiguracion = "agenda_horarios (admin)";
+                    configuracionEncontrada = true;
+                    
+                    // Verificar si el día está inactivo
+                    if (agendaConfig.activo === false) {
+                        esDiaNoLaboral = true;
+                    }
+                    
+                    // 🔴 EXTRAER HORAS DE INICIO Y FIN
+                    if (agendaConfig.hora_inicio) {
+                        const [hora] = agendaConfig.hora_inicio.split(':').map(Number);
+                        if (!isNaN(hora)) horaInicio = hora;
+                    }
+                    
+                    if (agendaConfig.hora_fin) {
+                        const [hora] = agendaConfig.hora_fin.split(':').map(Number);
+                        if (!isNaN(hora)) horaFin = hora;
+                    }
+                    
+                    // Descansos
+                    if (agendaConfig.descansos && Array.isArray(agendaConfig.descansos)) {
+                        descansos = agendaConfig.descansos;
+                    }
+                    
+                    console.log(`✅ Usando configuración de ADMIN: ${horaInicio}:00 a ${horaFin}:00`);
+                }
+            } catch (e) {
+                console.warn('⚠️ Error leyendo agenda_horarios:', e.message);
+            }
+        }
+        
+        // --- 3. 🔴 SOLO SI NO HAY EN agenda_horarios, intentar calendario_usuario ---
+        if (!configuracionEncontrada && db) {
+            try {
+                const calendarioDoc = await db.collection('calendario_usuario')
+                    .doc(window.selectedDate)
+                    .get();
+                
+                if (calendarioDoc.exists) {
+                    const calConfig = calendarioDoc.data();
+                    console.log('📅 Configuración ENCONTRADA en calendario_usuario:', calConfig);
+                    
+                    fuenteConfiguracion = "calendario_usuario (personalizado)";
+                    configuracionEncontrada = true;
+                    
+                    if (calConfig.activo === false) {
+                        esDiaNoLaboral = true;
+                    }
+                    
+                    if (calConfig.hora_inicio) {
+                        const [hora] = calConfig.hora_inicio.split(':').map(Number);
+                        if (!isNaN(hora)) horaInicio = hora;
+                    }
+                    
+                    if (calConfig.hora_fin) {
+                        const [hora] = calConfig.hora_fin.split(':').map(Number);
+                        if (!isNaN(hora)) horaFin = hora;
+                    }
+                    
+                    if (calConfig.descansos && Array.isArray(calConfig.descansos)) {
+                        descansos = calConfig.descansos;
+                    }
+                }
+            } catch (e) {
+                console.warn('⚠️ Error leyendo calendario_usuario:', e.message);
+            }
+        }
+        
+        // --- 4. 🔴 SI NO HAY CONFIGURACIÓN, USAR DEFAULTS POR DÍA DE LA SEMANA ---
+        if (!configuracionEncontrada) {
+            console.log(`⚠️ SIN CONFIGURACIÓN. Usando defaults para día ${diaSemana} (${obtenerNombreDia(diaSemana)})`);
+            fuenteConfiguracion = "defaults por día de semana";
+            
+            if (diaSemana === 0) { // Domingo
+                esDiaNoLaboral = true;
+                console.log('📅 Domingo - Día no laborable (default)');
+            } else if (diaSemana === 6) { // Sábado
+                horaInicio = 10;
+                horaFin = 16;
+                descansos = ['13:00'];
+                console.log('📅 Sábado - Horario 10:00 a 16:00 (default)');
+            } else { // Lunes a Viernes
+                horaInicio = 9;
+                horaFin = 19;
+                descansos = ['13:00'];
+                console.log('📅 Lunes-Viernes - Horario 9:00 a 19:00 (default)');
+            }
+        }
+        
+        // --- 5. OBTENER HORARIOS OCUPADOS ---
+        let horariosOcupados = [];
+        if (db) {
+            try {
                 const turnosSnapshot = await db.collection('turnos')
                     .where('fecha', '==', window.selectedDate)
                     .where('estado', 'in', ['pendiente', 'confirmado', 'asistio'])
@@ -4590,80 +4671,24 @@ async function updateAvailableHours() {
                 
                 horariosOcupados = turnosSnapshot.docs.map(doc => doc.data().hora);
                 console.log(`⏰ Horarios ocupados: ${horariosOcupados.length}`);
-                
-                // Buscar horarios bloqueados
-                const configDoc = await db.collection('configuracion')
-                    .doc('horariosBloqueados')
-                    .get();
-                
-                if (configDoc.exists) {
-                    const data = configDoc.data();
-                    horariosBloqueados = data[window.selectedDate] || [];
-                    console.log(`🚫 Horarios bloqueados: ${horariosBloqueados.length}`);
-                }
-                
-                // 🔴 NUEVO: Buscar horarios personalizados de calendario_usuario
-                const calendarioDoc = await db.collection('calendario_usuario')
-                    .doc(window.selectedDate)
-                    .get();
-                
-                if (calendarioDoc.exists) {
-                    horariosPersonalizados = calendarioDoc.data();
-                    console.log('🎯 Horarios personalizados encontrados:', horariosPersonalizados);
-                } else {
-                    console.log('📅 No hay horarios personalizados para esta fecha');
-                }
-                
-            } catch (firebaseError) {
-                console.warn("⚠️ Error Firebase, usando datos demo:", firebaseError.message);
-                // Usar datos demo
-                horariosOcupados = ['09:00', '14:00'];
-                horariosBloqueados = [];
-            }
-        } else {
-            // Modo demo
-            console.log("📱 Usando datos demo para horarios");
-            horariosOcupados = ['09:00', '14:00'];
-            horariosBloqueados = [];
-        }
-        
-        // Determinar horario laboral según configuración
-        let horaInicio = 9;
-        let horaFin = 19;
-        let descansos = [];
-        
-        // 🔴 USAR HORARIOS PERSONALIZADOS SI EXISTEN
-        if (horariosPersonalizados) {
-            if (horariosPersonalizados.hora_inicio) {
-                const [hora, minuto] = horariosPersonalizados.hora_inicio.split(':').map(Number);
-                horaInicio = hora;
-                console.log(`⏰ Hora inicio personalizada: ${horaInicio}:00`);
-            }
-            
-            if (horariosPersonalizados.hora_fin) {
-                const [hora, minuto] = horariosPersonalizados.hora_fin.split(':').map(Number);
-                horaFin = hora;
-                console.log(`⏰ Hora fin personalizada: ${horaFin}:00`);
-            }
-            
-            if (horariosPersonalizados.descansos && Array.isArray(horariosPersonalizados.descansos)) {
-                descansos = horariosPersonalizados.descansos;
-                console.log(`⏸️ Descansos configurados: ${descansos.length}`);
-            }
-            
-            // Verificar si el día está inactivo
-            if (horariosPersonalizados.activo === false) {
-                hoursList.innerHTML = `
-                    <div style="text-align: center; padding: 20px;">
-                        <i class="fas fa-calendar-times" style="color: #d4af37; font-size: 2rem;"></i>
-                        <p style="color: #d4af37; font-weight: bold;">Día no laboral</p>
-                        <p style="color: #aaa; font-size: 0.9rem;">No hay atención en esta fecha</p>
-                    </div>
-                `;
-                return;
+            } catch (e) {
+                console.warn('⚠️ Error cargando turnos:', e.message);
             }
         }
         
+        // --- 6. DÍA NO LABORABLE ---
+        if (esDiaNoLaboral) {
+            hoursList.innerHTML = `
+                <div style="text-align: center; padding: 20px;">
+                    <i class="fas fa-calendar-times" style="color: #d4af37; font-size: 2rem;"></i>
+                    <p style="color: #d4af37; font-weight: bold;">Día no laborable</p>
+                    <p style="color: #aaa; font-size: 0.9rem;">No hay atención en esta fecha</p>
+                </div>
+            `;
+            return;
+        }
+        
+        // --- 7. VERIFICAR SI ES HOY ---
         const esHoy = fechaSeleccionada.getDate() === hoy.getDate() && 
                      fechaSeleccionada.getMonth() === hoy.getMonth() && 
                      fechaSeleccionada.getFullYear() === hoy.getFullYear();
@@ -4672,31 +4697,28 @@ async function updateAvailableHours() {
         const horaActual = ahora.getHours();
         const minutoActual = ahora.getMinutes();
         
+        // --- 8. GENERAR HORARIOS (SOLO EN PUNTO) ---
         let hoursHTML = '';
         let hayHorariosDisponibles = false;
         
-        // 🔴 GENERAR HORARIOS SEGÚN CONFIGURACIÓN PERSONALIZADA
+        // 🔴 INFO DE CONFIGURACIÓN EN CABECERA
+        hoursHTML += `<p style="color: #aaa; font-size: 0.8rem; margin-bottom: 10px; text-align: center;">
+            <i class="fas fa-cog"></i> Configuración: ${fuenteConfiguracion}<br>
+            Horario: ${horaInicio}:00 a ${horaFin}:00
+        </p>`;
+        
         for (let hour = horaInicio; hour <= horaFin; hour++) {
-            // Solo horas en punto (00 minutos)
+            // SOLO HORAS EN PUNTO
             const timeStr = `${hour.toString().padStart(2, '0')}:00`;
             
             // Verificar si es horario de descanso
             const esDescanso = descansos.some(descanso => {
-                const [descansoHora] = descanso.split(':').map(Number);
-                return descansoHora === hour;
+                if (typeof descanso === 'string') {
+                    const [horaDescanso] = descanso.split(':').map(Number);
+                    return horaDescanso === hour;
+                }
+                return false;
             });
-            
-            if (esDescanso) {
-                hoursHTML += `
-                    <div class="hour-option disabled" 
-                         title="Horario de descanso"
-                         style="opacity: 0.4; background-color: #444;">
-                        <s>${timeStr}</s><br>
-                        <small style="color: #888;">Descanso</small>
-                    </div>
-                `;
-                continue;
-            }
             
             // Verificar si es horario pasado (solo hoy)
             let esHorarioPasado = false;
@@ -4709,29 +4731,24 @@ async function updateAvailableHours() {
             }
             
             const estaOcupado = horariosOcupados.includes(timeStr);
-            const estaBloqueado = horariosBloqueados.includes(timeStr);
             
             let className = 'hour-option';
             let style = '';
-            let title = '';
             let content = timeStr;
             let clickable = false;
             
             if (esHorarioPasado) {
                 className += ' disabled';
-                title = 'Horario ya pasó';
                 style = 'opacity: 0.5; background-color: #222;';
                 content = `<s>${timeStr}</s><br><small style="color: #aaa;">Pasado</small>`;
             }
-            else if (estaBloqueado) {
+            else if (esDescanso) {
                 className += ' disabled';
-                title = 'Horario bloqueado por administrador';
                 style = 'opacity: 0.4; background-color: #444;';
-                content = `<s>${timeStr}</s><br><small style="color: #ff4444;">Bloqueado</small>`;
+                content = `<s>${timeStr}</s><br><small style="color: #888;">Descanso</small>`;
             }
             else if (estaOcupado) {
                 className += ' disabled';
-                title = 'Horario reservado';
                 style = 'opacity: 0.6; background-color: #333;';
                 content = `<s>${timeStr}</s><br><small style="color: #ff9999;">Reservado</small>`;
             }
@@ -4746,7 +4763,6 @@ async function updateAvailableHours() {
             hoursHTML += `
                 <div class="${className}" 
                      data-time="${timeStr}" 
-                     ${title ? `title="${title}"` : ''}
                      style="${style}"
                      ${clickable ? `onclick="selectTime('${timeStr}')"` : ''}>
                     ${content}
@@ -4754,23 +4770,24 @@ async function updateAvailableHours() {
             `;
         }
         
-        // Actualizar el contenido
+        // --- 9. MOSTRAR RESULTADO ---
         if (hayHorariosDisponibles) {
             hoursList.innerHTML = hoursHTML;
+            console.log(`✅ Horarios actualizados. Rango: ${horaInicio}:00 a ${horaFin}:00 (${fuenteConfiguracion})`);
         } else {
             hoursList.innerHTML = `
                 <div style="text-align: center; padding: 20px;">
                     <i class="fas fa-calendar-times" style="color: #d4af37; font-size: 2rem;"></i>
                     <p style="color: #d4af37; font-weight: bold;">No hay horarios disponibles</p>
                     <p style="color: #aaa; font-size: 0.9rem;">
-                        ${esHoy ? 'Los horarios de hoy ya pasaron' : 'Todos los horarios están ocupados o bloqueados'}
+                        ${esHoy ? 'Los horarios de hoy ya pasaron' : 'Todos los horarios están ocupados o en descanso'}
+                    </p>
+                    <p style="color: #888; font-size: 0.8rem; margin-top: 10px;">
+                        Horario configurado: ${horaInicio}:00 - ${horaFin}:00
                     </p>
                 </div>
             `;
         }
-        
-        console.log(`✅ Horarios actualizados. Disponibles: ${hayHorariosDisponibles ? 'Sí' : 'No'}`);
-        console.log(`⏰ Rango horario usado: ${horaInicio}:00 a ${horaFin}:00`);
         
     } catch (error) {
         console.error('❌ Error en updateAvailableHours:', error);
@@ -4778,17 +4795,18 @@ async function updateAvailableHours() {
             <div style="text-align: center; padding: 20px; color: #ff4444;">
                 <i class="fas fa-exclamation-triangle"></i>
                 <p>Error al cargar horarios</p>
-                <p style="font-size: 0.9em; color: #aaa;">${error.message}</p>
                 <button onclick="updateAvailableHours()" style="margin-top: 10px; padding: 5px 15px; background: var(--primary); color: var(--dark); border: none; border-radius: 4px; cursor: pointer;">
                     Reintentar
                 </button>
             </div>
         `;
     }
+}
 
-       setTimeout(() => {
-        verificarScrollHorarios();
-    }, 100);
+// Función auxiliar
+function obtenerNombreDia(dia) {
+    const dias = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    return dias[dia] || 'Desconocido';
 }
 
 // 🔴 FUNCIÓN MEJORADA PARA CONFIGURAR LISTENERS DE FIREBASE
